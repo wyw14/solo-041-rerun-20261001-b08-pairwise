@@ -38,6 +38,11 @@ func (p *Plant) EmergencyStop(ctx context.Context, lineID model.LineID, reason s
 	p.lines[lineID] = state
 	p.mu.Unlock()
 	p.devices.StopLine(lineID, state.Generation)
+	// Fence the sludge equipment at the new generation so a late positive-flow
+	// receipt for the superseded sequence cannot restart the isolated pumps.
+	if _, err := p.sequences.Isolate(lineID, state.Generation, now); err != nil {
+		return model.LineState{}, err
+	}
 	p.equalizers.Release(lineID)
 	p.alarms.Raise(model.NewAlarm(lineID, "PROCESS_EMERGENCY", reason, model.SeverityCritical, now))
 	if err := p.snapshots.Save(state); err != nil {
