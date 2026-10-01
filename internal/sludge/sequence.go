@@ -68,6 +68,9 @@ func (b *SequenceBook) ConfirmFlow(lineID model.LineID, sequenceID uuid.UUID, ge
 	if !ok || sequence.ID != sequenceID || sequence.Generation != generation {
 		return Sequence{}, errors.New("sludge sequence confirmation is stale")
 	}
+	if sequence.Status != SequenceSwitching {
+		return Sequence{}, errors.New("sludge sequence is no longer accepting flow confirmation")
+	}
 	if _, err := b.pumps.Ready(sequence.PumpID, sequence.ID, sequence.Generation, flow, now); err != nil {
 		return Sequence{}, err
 	}
@@ -75,6 +78,21 @@ func (b *SequenceBook) ConfirmFlow(lineID model.LineID, sequenceID uuid.UUID, ge
 	sequence.UpdatedAt = now.UTC()
 	b.byLine[lineID] = sequence
 	return sequence, nil
+}
+
+// Isolate fails the line's in-flight sequence and fences its pumps at the
+// emergency generation. After isolation, no older-generation receipt can
+// revive the sequence or restart the line's equipment.
+func (b *SequenceBook) Isolate(lineID model.LineID, generation uint64, now time.Time) {
+	b.mu.Lock()
+	sequence, ok := b.byLine[lineID]
+	if ok && sequence.Status != SequenceFailed {
+		sequence.Status = SequenceFailed
+		sequence.UpdatedAt = now.UTC()
+		b.byLine[lineID] = sequence
+	}
+	b.mu.Unlock()
+	b.pumps.FenceLine(lineID, generation, now)
 }
 
 func (b *SequenceBook) Fail(lineID model.LineID, now time.Time) (Sequence, error) {

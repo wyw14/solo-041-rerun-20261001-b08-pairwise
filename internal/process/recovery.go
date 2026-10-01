@@ -52,6 +52,7 @@ func (p *Plant) ApplyRecovered(ctx context.Context, event model.Event) error {
 		state = state.Isolate(event.Sequence, event.OccurredAt)
 		p.lines[event.LineID] = state
 		p.devices.StopLine(event.LineID, state.Generation)
+		p.sequences.Isolate(event.LineID, state.Generation, event.OccurredAt)
 		return nil
 	}
 	if event.Kind == model.EventDeviceCommanded {

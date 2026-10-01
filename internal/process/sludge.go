@@ -44,6 +44,15 @@ func (p *Plant) StartSludgeSequence(lineID model.LineID, pumpID string, number u
 }
 
 func (p *Plant) ConfirmSludgeFlow(lineID model.LineID, sequenceID uuid.UUID, generation uint64, flow float64) (sludge.Sequence, error) {
+	p.mu.RLock()
+	state, ok := p.lines[lineID]
+	p.mu.RUnlock()
+	if !ok {
+		return sludge.Sequence{}, errors.New("process line is not found")
+	}
+	if state.Emergency || generation != state.Generation {
+		return sludge.Sequence{}, errors.New("sludge sequence confirmation is stale")
+	}
 	return p.sequences.ConfirmFlow(lineID, sequenceID, generation, flow, p.now())
 }
 

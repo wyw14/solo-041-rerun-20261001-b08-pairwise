@@ -19,6 +19,7 @@ type Pump struct {
 	Flow            float64          `json:"flow"`
 	OwnerSequence   uuid.UUID        `json:"owner_sequence,omitempty"`
 	OwnerGeneration uint64           `json:"owner_generation"`
+	FenceGeneration uint64           `json:"fence_generation,omitempty"`
 	UpdatedAt       time.Time        `json:"updated_at"`
 }
 
@@ -48,6 +49,9 @@ func (c *PumpController) Assign(pumpID string, sequenceID uuid.UUID, generation 
 	if !ok || sequenceID == uuid.Nil || generation == 0 {
 		return Pump{}, errors.New("pump assignment is invalid")
 	}
+	if generation < pump.FenceGeneration {
+		return Pump{}, errors.New("pump assignment is fenced by a newer emergency generation")
+	}
 	pump.OwnerSequence = sequenceID
 	pump.OwnerGeneration = generation
 	pump.Primed = false
@@ -64,6 +68,9 @@ func (c *PumpController) Ready(pumpID string, sequenceID uuid.UUID, generation u
 	pump, ok := c.pumps[pumpID]
 	if !ok {
 		return Pump{}, errors.New("return pump is not found")
+	}
+	if generation < pump.FenceGeneration {
+		return Pump{}, errors.New("pump ready confirmation is fenced by a newer emergency generation")
 	}
 	if pump.OwnerSequence != sequenceID || pump.OwnerGeneration != generation {
 		return Pump{}, errors.New("pump ready confirmation is stale")
@@ -87,13 +94,38 @@ func (c *PumpController) StopOwned(pumpID string, sequenceID uuid.UUID, generati
 		return Pump{}, errors.New("return pump is not found")
 	}
 	if pump.OwnerSequence != sequenceID || pump.OwnerGeneration != generation {
-		return Pump{}, errors.New("pump ownership changed before stop")
+		// Ownership moved to a newer sequence after this stop was scheduled.
+		// The stale stop must not touch the current owner's pump, and it must
+		// not poison the compensation queue either: the pump is already out of
+		// the old sequence's hands, which is all the stop was meant to ensure.
+		return pump, nil
 	}
 	pump.Running = false
 	pump.Flow = 0
 	pump.UpdatedAt = now.UTC()
 	c.pumps[pumpID] = pump
 	return pump, nil
+}
+
+// FenceLine stops every pump of a process line and fences them at the given
+// emergency generation, so no older-generation assignment or ready
+// confirmation can ever restart the isolated line's equipment.
+func (c *PumpController) FenceLine(lineID model.LineID, generation uint64, now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for id, pump := range c.pumps {
+		if pump.LineID != lineID {
+			continue
+		}
+		if generation > pump.FenceGeneration {
+			pump.FenceGeneration = generation
+		}
+		pump.Primed = false
+		pump.Running = false
+		pump.Flow = 0
+		pump.UpdatedAt = now.UTC()
+		c.pumps[id] = pump
+	}
 }
 
 func (c *PumpController) Snapshot() []Pump {
